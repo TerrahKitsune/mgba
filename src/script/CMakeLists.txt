@@ -17,6 +17,10 @@ if(USE_JSON_C AND ENABLE_VFS)
 	list(APPEND SOURCE_FILES storage.c)
 endif()
 
+if(USE_SQLITE3)
+	list(APPEND SOURCE_FILES sqlite.c)
+endif()
+
 if(USE_LUA)
 	list(APPEND SOURCE_FILES engines/lua.c)
 	list(APPEND TEST_FILES

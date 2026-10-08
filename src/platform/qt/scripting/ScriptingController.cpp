@@ -361,6 +361,9 @@ void ScriptingController::init() {
 #ifdef USE_JSON_C
 	mScriptContextAttachStorage(&m_scriptContext);
 #endif
+#ifdef USE_SQLITE3
+	mScriptContextAttachSQLite(&m_scriptContext);
+#endif
 	mScriptContextRegisterEngines(&m_scriptContext);
 
 	mScriptContextAttachLogger(&m_scriptContext, &m_logger);

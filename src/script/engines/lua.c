@@ -195,6 +195,111 @@ static const char* _socketLuaSource =
 	"setmetatable(socket._tcpMT.__index, socket._mt)\n"
 	"setmetatable(socket.ERRORS, socket._errMT)\n";
 
+#ifdef USE_SQLITE3
+// The SQLite scripting API, built on the native _sqlite object. _sqlite is looked up at call time because frontends attach
+// it after the engine is created.
+static const char* _sqliteLuaSource =
+	"sqlite = {}\n"
+	"do\n"
+	"  local STEP_ROW, STEP_DONE = 1, 0\n"
+	"  local Connection = {}\n"
+	"  Connection.__index = Connection\n"
+	"  local function native(self)\n"
+	"    if not self._db then error('database is closed', 3) end\n"
+	"    return self._db\n"
+	"  end\n"
+	"  local function bind(db, index, value)\n"
+	"    local kind = type(value)\n"
+	"    if kind == 'number' then\n"
+	"      if math.type(value) == 'integer' then return db:bindInt(index, value) end\n"
+	"      return db:bindFloat(index, value)\n"
+	"    elseif kind == 'boolean' then\n"
+	"      return db:bindInt(index, value and 1 or 0)\n"
+	"    elseif kind == 'string' then\n"
+	"      return db:bindText(index, value)\n"
+	"    end\n"
+	"    return db:bindNull(index)\n"
+	"  end\n"
+	"  local function bindAll(db, params)\n"
+	"    for index = 1, db:paramCount() do\n"
+	"      local name = db:paramName(index)\n"
+	"      if not name then return false, 'Parameters contain a nameless parameter!' end\n"
+	"      if not bind(db, index, params[name]) then return false, db:error() end\n"
+	"    end\n"
+	"    return true\n"
+	"  end\n"
+	"  function sqlite.open(name)\n"
+	"    if not _sqlite then return nil, 'SQLite is not available in this frontend' end\n"
+	"    if name ~= nil and type(name) ~= 'string' then return nil, 'database name must be a string' end\n"
+	"    local db\n"
+	"    if name == nil then db = _sqlite:openMemory() else db = _sqlite:open(name) end\n"
+	"    if not db then return nil, _sqlite:error() or 'cannot open database' end\n"
+	"    return setmetatable({ _db = db, _pending = false, _current = false }, Connection)\n"
+	"  end\n"
+	"  function Connection:query(sql, params)\n"
+	"    local db = native(self)\n"
+	"    self._pending, self._current = false, false\n"
+	"    if not db:prepare(sql) then return false, db:error() end\n"
+	"    if params ~= nil then\n"
+	"      local ok, err = bindAll(db, params)\n"
+	"      if not ok then db:finish() return false, err end\n"
+	"    end\n"
+	"    local status = db:step()\n"
+	"    if status == STEP_ROW then\n"
+	"      self._pending = true\n"
+	"      return true, 'ROW'\n"
+	"    elseif status == STEP_DONE then\n"
+	"      return true, 'DONE'\n"
+	"    end\n"
+	"    return false, db:error()\n"
+	"  end\n"
+	"  function Connection:fetch()\n"
+	"    local db = native(self)\n"
+	"    if self._pending then\n"
+	"      self._pending, self._current = false, true\n"
+	"      return true\n"
+	"    end\n"
+	"    if self._current and db:step() == STEP_ROW then return true end\n"
+	"    self._current = false\n"
+	"    return false\n"
+	"  end\n"
+	"  function Connection:getRow(index)\n"
+	"    local db = native(self)\n"
+	"    if not self._current then return nil end\n"
+	"    if index ~= nil and index ~= 0 then return db:column(index) end\n"
+	"    local row = {}\n"
+	"    for column = 1, db:columnCount() do row[db:columnName(column)] = db:column(column) end\n"
+	"    return row\n"
+	"  end\n"
+	"  function Connection:getColumns()\n"
+	"    local db = native(self)\n"
+	"    local columns = {}\n"
+	"    for column = 1, db:columnCount() do columns[column] = db:columnName(column) end\n"
+	"    return columns\n"
+	"  end\n"
+	"  function Connection:finish()\n"
+	"    local db = native(self)\n"
+	"    self._pending, self._current = false, false\n"
+	"    db:finish()\n"
+	"  end\n"
+	"  function Connection:scalar(sql, params)\n"
+	"    native(self)\n"
+	"    local ok, status = self:query(sql, params)\n"
+	"    if not ok then return nil, status end\n"
+	"    local value = nil\n"
+	"    if status == 'ROW' then value = self._db:column(1) end\n"
+	"    self:finish()\n"
+	"    return value\n"
+	"  end\n"
+	"  function Connection:close()\n"
+	"    if self._db then\n"
+	"      self._db:close()\n"
+	"      self._db = nil\n"
+	"    end\n"
+	"  end\n"
+	"end\n";
+#endif
+
 static const struct _mScriptSocketError {
 	enum mSocketErrorCode err;
 	const char* message;
@@ -330,6 +435,54 @@ mSCRIPT_DEFINE_DEFAULTS_END;
 mSCRIPT_DEFINE_DOC_FUNCTION(LUA_NAME, socket_tcp, DS(socket), 0);
 mSCRIPT_DEFINE_DOC_FUNCTION(LUA_NAME, socket_bind, DS(socket), 2, STR, address, U16, port);
 mSCRIPT_DEFINE_DOC_FUNCTION(LUA_NAME, socket_connect, DS(socket), 2, STR, address, U16, port);
+
+#ifdef USE_SQLITE3
+mSCRIPT_DECLARE_DOC_STRUCT(LUA_NAME, sqlite);
+mSCRIPT_DECLARE_DOC_STRUCT_METHOD(LUA_NAME, sqlite, BOOL, query, 2, STR, sql, WTABLE, params);
+mSCRIPT_DECLARE_DOC_STRUCT_METHOD(LUA_NAME, sqlite, BOOL, fetch, 0);
+mSCRIPT_DECLARE_DOC_STRUCT_METHOD(LUA_NAME, sqlite, WTABLE, getRow, 1, S32, index);
+mSCRIPT_DECLARE_DOC_STRUCT_METHOD(LUA_NAME, sqlite, WLIST, getColumns, 0);
+mSCRIPT_DECLARE_DOC_STRUCT_VOID_METHOD(LUA_NAME, sqlite, finish, 0);
+mSCRIPT_DECLARE_DOC_STRUCT_METHOD(LUA_NAME, sqlite, WRAPPER, scalar, 2, STR, sql, WTABLE, params);
+mSCRIPT_DECLARE_DOC_STRUCT_VOID_METHOD(LUA_NAME, sqlite, close, 0);
+
+mSCRIPT_DEFINE_DOC_STRUCT(LUA_NAME, sqlite)
+	mSCRIPT_DEFINE_CLASS_DOCSTRING(
+		"An open SQLite database, returned by sqlite.open. Every method except close raises an error "
+		"once the database has been closed"
+	)
+	mSCRIPT_DEFINE_DOCSTRING(
+		"Runs the first statement in `sql`. Named parameters (`:name`, `@name`, `$name`) are bound from the optional "
+		"`params` table by name; integers, floats, booleans (0/1) and strings are bound as such, anything else as NULL. "
+		"Returns `true, \"ROW\"` when there is at least one row (read them with " LUA_NAME "::struct::sqlite.fetch), "
+		"`true, \"DONE\"` when there is none, or `false, error`"
+	)
+	mSCRIPT_DEFINE_DOC_STRUCT_METHOD(LUA_NAME, sqlite, query)
+	mSCRIPT_DEFINE_DOCSTRING(
+		"Makes the next row current and returns true, or returns false when there are no more rows. "
+		"The first call after a query that returned \"ROW\" makes the first row current"
+	)
+	mSCRIPT_DEFINE_DOC_STRUCT_METHOD(LUA_NAME, sqlite, fetch)
+	mSCRIPT_DEFINE_DOCSTRING(
+		"Without an index (or 0), returns the current row as a table keyed by column name. With a 1-based index, "
+		"returns that column's value. Returns nil when there is no current row"
+	)
+	mSCRIPT_DEFINE_DOC_STRUCT_METHOD(LUA_NAME, sqlite, getRow)
+	mSCRIPT_DEFINE_DOCSTRING("Returns the column names of the current statement in order, or an empty table without one")
+	mSCRIPT_DEFINE_DOC_STRUCT_METHOD(LUA_NAME, sqlite, getColumns)
+	mSCRIPT_DEFINE_DOCSTRING("Ends the current statement without reading the remaining rows")
+	mSCRIPT_DEFINE_DOC_STRUCT_METHOD(LUA_NAME, sqlite, finish)
+	mSCRIPT_DEFINE_DOCSTRING(
+		"Runs `sql` like query and returns the first column of the first row, or nil when there is no row; "
+		"returns `nil, error` on failure. Ends any statement still open from query"
+	)
+	mSCRIPT_DEFINE_DOC_STRUCT_METHOD(LUA_NAME, sqlite, scalar)
+	mSCRIPT_DEFINE_DOCSTRING("Closes the database. The database is also closed when it is garbage collected")
+	mSCRIPT_DEFINE_DOC_STRUCT_METHOD(LUA_NAME, sqlite, close)
+mSCRIPT_DEFINE_END;
+
+mSCRIPT_DEFINE_DOC_FUNCTION(LUA_NAME, sqlite_open, DS(sqlite), 1, STR, name);
+#endif
 
 const struct mScriptType mSTLuaFunc = {
 	.base = mSCRIPT_TYPE_FUNCTION,
@@ -491,6 +644,26 @@ struct mScriptEngineContext* _luaCreate(struct mScriptEngine2* engine, struct mS
 			"**Caution:** This is a blocking call. The emulator will not respond until "
 			"the connection either succeeds or fails");
 	}
+
+#ifdef USE_SQLITE3
+	status = luaL_dostring(luaContext->lua, _sqliteLuaSource);
+	if (status) {
+		mLOG(SCRIPT, ERROR, "Error in dostring while initializing SQLite: %s\n", lua_tostring(luaContext->lua, -1));
+		lua_pop(luaContext->lua, 1);
+	} else {
+		mScriptEngineExportDocNamespace(&luaContext->d, "sqlite", (struct mScriptKVPair[]) {
+			mSCRIPT_KV_PAIR(open, mSCRIPT_VALUE_DOC_FUNCTION(sqlite_open)),
+			mSCRIPT_KV_SENTINEL
+		});
+		mScriptEngineSetDocstring(&luaContext->d, "sqlite", "SQLite databases for scripts");
+		mScriptEngineSetDocstring(&luaContext->d, "sqlite.open",
+			"Opens or creates a database and returns it, or returns `nil, error` if it can't be opened. A `name` maps "
+			"to a file in the `databases` folder of the mGBA configuration directory: any directory part is dropped "
+			"and `.db` is appended if missing; names that are empty, start with `.` or contain characters other than "
+			"letters, digits, space, `_`, `-` and `.` are rejected. Without a name, opens a new in-memory database. "
+			"New database files use WAL mode");
+	}
+#endif
 
 	mScriptEngineExportDocNamespace(&luaContext->d, "script", (struct mScriptKVPair[]) {
 		mSCRIPT_KV_PAIR(dir, mScriptStringCreateFromASCII("/")),

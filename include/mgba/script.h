@@ -12,6 +12,7 @@
 #include <mgba/script/context.h>
 #include <mgba/script/input.h>
 #include <mgba/script/macros.h>
+#include <mgba/script/sqlite.h>
 #include <mgba/script/storage.h>
 #include <mgba/script/types.h>
 

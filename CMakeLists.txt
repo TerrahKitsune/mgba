@@ -645,6 +645,7 @@ endif()
 
 if(WANT_SQLITE3 AND NOT USE_SQLITE3)
 	list(APPEND FEATURE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/third-party/sqlite3/sqlite3.c)
+	set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/third-party/sqlite3/sqlite3.c PROPERTIES COMPILE_DEFINITIONS SQLITE_ENABLE_FTS5)
 	include_directories(AFTER ${CMAKE_CURRENT_SOURCE_DIR}/src/third-party/sqlite3/)
 	set(USE_SQLITE3 ON)
 endif()

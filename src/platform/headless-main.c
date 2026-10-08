@@ -203,6 +203,9 @@ int main(int argc, char * argv[]) {
 #ifdef USE_JSON_C
 		mScriptContextAttachStorage(&scriptContext);
 #endif
+#ifdef USE_SQLITE3
+		mScriptContextAttachSQLite(&scriptContext);
+#endif
 		mScriptContextRegisterEngines(&scriptContext);
 
 		mScriptContextAttachCore(&scriptContext, core);
